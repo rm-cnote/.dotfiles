@@ -125,7 +125,10 @@
 ;;(load-theme 'tango-dark)
 ;; have tried: doom-palenight doom-material-dark doom-solarized-light doom-solarized-light doom-zenburn doom-monokai-machine doom-oceanic-next
 (use-package doom-themes
-  :init (load-theme 'doom-acario-dark t))
+  :init (load-theme 'doom-acario-dark t)
+  :config
+  (custom-set-faces
+   '(region ((t (:background "#4f5b66"))))))
 
 ;; Replace the all-the-icons package with nerd-icons
 ;; all-the-icons is broken in doomemacs, see
@@ -300,7 +303,6 @@
    ("f"   . dirvish-file-info-menu)
    ("y"   . dirvish-yank-menu)
    ("N"   . dirvish-narrow)
-   ("^"   . dirvish-history-last)
    ("h"   . dirvish-history-jump) ; remapped `describe-mode'
    ("s"   . dirvish-quicksort)    ; remapped `dired-sort-toggle-or-edit'
    ("v"   . dirvish-vc-menu)      ; remapped `dired-view-file'
@@ -709,6 +711,22 @@
 (global-set-key (kbd "C-c s") 'chatgpt-shell)
 (global-set-key (kbd "C-c e") 'chatgpt-shell-prompt-compose)
 (global-set-key (kbd "C-c m") 'chatgpt-shell-swap-model)
+
+;; Dockerfile mode for editing Dockerfiles
+(use-package dockerfile-mode
+  :ensure t
+  :mode ("Dockerfile\\'" . dockerfile-mode))
+
+;; Docker management from Emacs
+(use-package docker
+  :ensure t
+  :bind ("C-c d" . docker)
+  :config
+  (setq docker-command "docker"))
+
+;; docker compose mode
+(use-package docker-compose-mode
+  :ensure t)
 
 ;; Python Development Configuration
 
