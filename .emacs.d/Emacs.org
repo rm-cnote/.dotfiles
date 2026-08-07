@@ -259,6 +259,7 @@
                           'treemacs-mode
                           'eshell-mode
                           'dired-mode
+                          'pdf-view-mode
                           'org-agenda-mode)
       (display-line-numbers-mode -1)))
   (add-hook 'after-change-major-mode-hook
@@ -1515,6 +1516,108 @@ For markdown style checking and linting:
     (use-package flymake-markdownlint
       :after markdown-mode
       :hook (markdown-mode . flymake-markdownlint-setup)))
+#+end_src
+
+* PDF Tools
+** Reference
+*** Why not doc-view?
+Emacs' built-in ~doc-view-mode~ rasterizes PDFs with an external converter —
+either Ghostscript (~gs~) or MuPDF (~mutool~/~mudraw~). If neither is on
+~PATH~, ~doc-view-mode-maybe~ silently gives up and falls back to
+~fundamental-mode~, so the buffer shows the raw PDF bytes (~%PDF-1.4~,
+FlateDecode streams, etc.) instead of the document.
+
+Check whether doc-view can handle PDFs at all:
+#+begin_src emacs-lisp :tangle no
+  (doc-view-mode-p 'pdf)  ; nil means no converter available
+#+end_src
+
+~pdf-tools~ avoids the problem entirely: its ~epdfinfo~ server links against
+poppler and renders pages directly, with real text selection, search,
+annotations and outline support.
+
+*** Prerequisites
+poppler is required to build ~epdfinfo~. On macOS:
+#+begin_src sh
+  brew install poppler automake
+#+end_src
+
+On Ubuntu/Debian:
+#+begin_src sh
+  sudo apt install libpoppler-glib-dev libpng-dev imagemagick automake
+#+end_src
+
+If ~epdfinfo~ is missing or stale, rebuild it with ~M-x pdf-tools-install~.
+After a poppler upgrade the binary can break on dylib version bumps; the fix
+is to rebuild rather than reinstall the package.
+
+*** Key Bindings
+**** Navigation
+| Key       | Action                          |
+|-----------+---------------------------------|
+| ~n~ / ~p~ | Next / previous page            |
+| ~SPC~     | Scroll up (page down)           |
+| ~DEL~     | Scroll down (page up)           |
+| ~M-g g~   | Go to page                      |
+| ~o~       | Jump to outline (table of contents) |
+| ~C-c C-r~ | Restore last position           |
+
+**** Display
+| Key       | Action                          |
+|-----------+---------------------------------|
+| ~+~ / ~-~ | Zoom in / out                   |
+| ~0~       | Reset zoom                      |
+| ~W~       | Fit page width                  |
+| ~H~       | Fit page height                 |
+| ~P~       | Fit whole page                  |
+| ~m~       | Toggle midnight (dark) mode     |
+
+**** Search and Selection
+| Key       | Action                          |
+|-----------+---------------------------------|
+| ~C-s~     | Incremental search across pages |
+| ~M-s o~   | Occur-style list of matches     |
+| ~mouse-1~ | Drag to select text region      |
+| ~C-w~     | Copy selected region text       |
+
+**** Annotations
+| Key       | Action                          |
+|-----------+---------------------------------|
+| ~a l~     | List annotations                |
+| ~a t~     | Add text annotation             |
+| ~a m~     | Add markup (highlight) annotation |
+| ~C-x C-s~ | Save annotations into the file  |
+
+*** Notes
+- ~pdf-view-use-scaling~ is required for sharp rendering on HiDPI/Retina
+  displays; without it pages render at logical resolution and look blurry.
+- The ~:magic~ matcher catches PDFs whose filename lacks a ~.pdf~ extension
+  (downloads, attachments, temp files).
+- Line numbers are disabled in ~pdf-view-mode~ via the global exclusion list
+  in [[*Line and Column Numbers][Line and Column Numbers]].
+
+** Code
+#+begin_src emacs-lisp
+  ;; PDF viewing via poppler instead of doc-view's ghostscript/mupdf path.
+  (use-package pdf-tools
+    :mode ("\\.[pP][dD][fF]\\'" . pdf-view-mode)
+    :magic ("%PDF" . pdf-view-mode)
+    :custom
+    ;; Sharp rendering on Retina displays.
+    (pdf-view-use-scaling t)
+    (pdf-view-resize-factor 1.1)
+    :config
+    ;; Builds epdfinfo if absent, and registers pdf-view-mode handlers.
+    (pdf-tools-install :no-query)
+    (setq-default pdf-view-display-size 'fit-page)
+    ;; pdf-tools ships its own isearch integration; make C-s use it.
+    (define-key pdf-view-mode-map (kbd "C-s") #'isearch-forward))
+
+  ;; Reopen PDFs on the page you left off at.
+  (use-package saveplace-pdf-view
+    :after (pdf-tools saveplace))
+
+  (save-place-mode 1)
 #+end_src
 
 * Version Control

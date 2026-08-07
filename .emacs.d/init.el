@@ -228,6 +228,7 @@ For 1 standard display (<=1920px): maximize single frame."
                         'treemacs-mode
                         'eshell-mode
                         'dired-mode
+                        'pdf-view-mode
                         'org-agenda-mode)
     (display-line-numbers-mode -1)))
 (add-hook 'after-change-major-mode-hook
@@ -1079,6 +1080,27 @@ _P_: skip prev    _d_: defun
   (use-package flymake-markdownlint
     :after markdown-mode
     :hook (markdown-mode . flymake-markdownlint-setup)))
+
+;; PDF viewing via poppler instead of doc-view's ghostscript/mupdf path.
+(use-package pdf-tools
+  :mode ("\\.[pP][dD][fF]\\'" . pdf-view-mode)
+  :magic ("%PDF" . pdf-view-mode)
+  :custom
+  ;; Sharp rendering on Retina displays.
+  (pdf-view-use-scaling t)
+  (pdf-view-resize-factor 1.1)
+  :config
+  ;; Builds epdfinfo if absent, and registers pdf-view-mode handlers.
+  (pdf-tools-install :no-query)
+  (setq-default pdf-view-display-size 'fit-page)
+  ;; pdf-tools ships its own isearch integration; make C-s use it.
+  (define-key pdf-view-mode-map (kbd "C-s") #'isearch-forward))
+
+;; Reopen PDFs on the page you left off at.
+(use-package saveplace-pdf-view
+  :after (pdf-tools saveplace))
+
+(save-place-mode 1)
 
 ;; Magit configuration
 (use-package magit
