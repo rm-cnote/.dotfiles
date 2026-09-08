@@ -228,6 +228,7 @@ For 1 standard display (<=1920px): maximize single frame."
                         'treemacs-mode
                         'eshell-mode
                         'dired-mode
+                        'pdf-view-mode
                         'org-agenda-mode)
     (display-line-numbers-mode -1)))
 (add-hook 'after-change-major-mode-hook
@@ -248,6 +249,8 @@ For 1 standard display (<=1920px): maximize single frame."
                     :weight 'regular)
 
 (global-auto-revert-mode 1)
+
+(save-place-mode 1)
 
 ;;(load-theme 'tango-dark)
 ;; have tried: doom-palenight doom-material-dark doom-solarized-light doom-solarized-light doom-zenburn doom-monokai-machine doom-oceanic-next
@@ -1079,6 +1082,37 @@ _P_: skip prev    _d_: defun
   (use-package flymake-markdownlint
     :after markdown-mode
     :hook (markdown-mode . flymake-markdownlint-setup)))
+
+;; PDF viewing via poppler instead of doc-view's ghostscript/mupdf path.
+(use-package pdf-tools
+  ;; `auto-mode-case-fold' is t, so this matches .PDF too.
+  :mode ("\\.pdf\\'" . pdf-view-mode)
+  ;; Every real PDF starts "%PDF-". The trailing dash keeps a TeX or Matlab
+  ;; file opening with a "%PDF ..." comment from being captured, since
+  ;; `magic-mode-alist' is consulted before `auto-mode-alist'.
+  :magic ("%PDF-" . pdf-view-mode)
+  :custom
+  ;; Sharp rendering on Retina displays.
+  (pdf-view-use-scaling t)
+  (pdf-view-resize-factor 1.1)
+  (pdf-view-display-size 'fit-page)
+  :bind (:map pdf-view-mode-map
+              ;; C-s is globally `swiper'; use pdf-tools' cross-page isearch.
+              ("C-s" . isearch-forward))
+  :config
+  ;; Builds epdfinfo if absent, registers the pdf-view-mode handlers, and
+  ;; must stay in `:config' -- see Notes on the autoload chain above.
+  (pdf-tools-install :no-query)
+  ;; `pdf-tools-install' unconditionally re-adds its own bare "%PDF" magic
+  ;; entry, which re-opens the TeX/Matlab hole the `:magic' matcher above
+  ;; closes. Drop it and let the stricter "%PDF-" entry stand alone.
+  (setq magic-mode-alist
+        (remove pdf-tools-magic-mode-alist-entry magic-mode-alist)))
+
+;; Reopen PDFs on the page you left off at. Rides on `save-place-mode',
+;; enabled in the Saved Places section.
+(use-package saveplace-pdf-view
+  :after (pdf-tools saveplace))
 
 ;; Magit configuration
 (use-package magit
