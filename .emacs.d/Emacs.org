@@ -676,6 +676,90 @@ Hydra provides sticky keymaps that stay active until dismissed, perfect for repe
     (dired-listing-switches "-aghoL --group-directories-first"))
 #+end_src
 
+* Emacs Server
+** Reference
+*** Purpose
+Starts the Emacs server at startup so ~emacsclient~ opens files in this
+running instance instead of spawning a new Emacs. Without it, ~server-start~
+has to be run by hand every session.
+
+*** Usage
+#+begin_src sh
+  emacsclient -n file.txt      # open in the running GUI frame, return immediately
+  emacsclient -c               # new graphical frame on the running instance
+  emacsclient -t file.txt      # new terminal frame in the current tty
+#+end_src
+
+Set these in your shell profile so tools reuse the running Emacs:
+#+begin_src sh
+  export EDITOR="emacsclient -t -a ''"
+  export VISUAL="emacsclient -c -a ''"
+#+end_src
+
+The ~-a ''~ matters. Bare ~emacsclient~ aborts with "can't find socket; have
+you started the server?" when no Emacs is running — which kills a ~git commit~
+in a shell opened before Emacs, or after it exits. An empty ~-a~ tells
+~emacsclient~ to start Emacs in daemon mode and connect to that instead, so the
+command works either way. ~-a emacs~ (plain fallback instance) is the other
+reasonable choice.
+
+Finish editing a client buffer with ~C-x #~ (~server-edit~), which returns
+control to the waiting ~emacsclient~ process.
+
+*** Why the guards
+| Guard                | Reason                                                                   |
+|----------------------+--------------------------------------------------------------------------|
+| ~noninteractive~     | A script that loads this config must not leave a server behind           |
+| ~(daemonp)~          | ~emacs --daemon~ already starts its own server                           |
+| ~(server-running-p)~ | A second GUI instance would fail with "Unable to start the Emacs server" |
+
+The ~noninteractive~ guard does *not* cover the tangle command in ~CLAUDE.md~:
+~--batch~ implies ~-q~, so that run never loads ~init.el~ and never reaches this
+hook. It covers the cases that *do* load the config — ~emacs --batch -l init.el~
+and ~--script~.
+
+~server-running-p~ returns nil for a stale socket left behind by a crash, and
+~server-start~ deletes that socket itself — so a hard kill does not require
+manual cleanup.
+
+*** Notes
+- Only one server runs per Emacs process, so the multi-frame setup in
+  [[*Startup and Frame Setup][Startup and Frame Setup]] is unaffected.
+- Runs on ~emacs-startup-hook~, after frame setup on ~after-init-hook~.
+- ~server~ is loaded here rather than in the Dirvish block below, which reads
+  ~server-buffer-clients~ to avoid killing buffers a client still has open.
+- ~server-start~ is wrapped in ~condition-case~. ~add-hook~ prepends, so this
+  runs *before* ~efs/display-startup-time~ on the same hook — and an error in a
+  hook function aborts the rest of ~run-hooks~. Unwrapped, an unwritable
+  ~server-socket-dir~ or a ~server-use-tcp~ misconfiguration would silently
+  swallow the startup-time message, a symptom pointing nowhere near the server.
+- Auto-starting means every Emacs launch exposes a socket that lets any process
+  able to read ~server-socket-dir~ and the auth file evaluate arbitrary elisp in
+  this Emacs. The default socket dir is ~${TMPDIR}/emacs$UID~ with mode 700, so
+  on a single-user machine this is not a concern — noted only because this flips
+  the server from opt-in-per-session to always-on.
+
+** Code
+#+begin_src emacs-lisp
+  (require 'server)
+
+  (defun my/start-server-once ()
+    "Start the Emacs server unless one is already running.
+  Skips batch and daemon sessions, and any session where another Emacs
+  already owns the socket.  Failures are reported rather than signalled, so
+  they cannot abort the rest of `emacs-startup-hook'."
+    (unless (or noninteractive (daemonp) (server-running-p))
+      (condition-case err
+          (progn
+            (server-start)
+            (message "Emacs server started: %s" server-name))
+        (error
+         (message "Emacs server failed to start: %s"
+                  (error-message-string err))))))
+
+  (add-hook 'emacs-startup-hook #'my/start-server-once)
+#+end_src
+
 * Dirvish
 ** Reference
 
@@ -771,9 +855,6 @@ Dirvish integrates with fd for advanced file searching:
 
 ** Code
 #+begin_src emacs-lisp
-  ;; Load server explicitly before dirvish
-  (require 'server)
-
   (use-package dirvish
     :straight (dirvish :type git :host github :repo "alexluigit/dirvish")
     :init

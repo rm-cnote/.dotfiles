@@ -588,8 +588,23 @@ _P_: skip prev    _d_: defun
   :custom
   (dired-listing-switches "-aghoL --group-directories-first"))
 
-;; Load server explicitly before dirvish
 (require 'server)
+
+(defun my/start-server-once ()
+  "Start the Emacs server unless one is already running.
+Skips batch and daemon sessions, and any session where another Emacs
+already owns the socket.  Failures are reported rather than signalled, so
+they cannot abort the rest of `emacs-startup-hook'."
+  (unless (or noninteractive (daemonp) (server-running-p))
+    (condition-case err
+        (progn
+          (server-start)
+          (message "Emacs server started: %s" server-name))
+      (error
+       (message "Emacs server failed to start: %s"
+                (error-message-string err))))))
+
+(add-hook 'emacs-startup-hook #'my/start-server-once)
 
 (use-package dirvish
   :straight (dirvish :type git :host github :repo "alexluigit/dirvish")
