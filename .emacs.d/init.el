@@ -590,15 +590,18 @@ _P_: skip prev    _d_: defun
 (defun my/start-server-once ()
   "Start the Emacs server unless one is already running.
 Skips batch and daemon sessions, and any session where another Emacs
-already owns the socket."
+already owns the socket.  Failures are reported rather than signalled, so
+they cannot abort the rest of `emacs-startup-hook'."
   (unless (or noninteractive (daemonp) (server-running-p))
-    (server-start)
-    (message "Emacs server started: %s" server-name)))
+    (condition-case err
+        (progn
+          (server-start)
+          (message "Emacs server started: %s" server-name))
+      (error
+       (message "Emacs server failed to start: %s"
+                (error-message-string err))))))
 
 (add-hook 'emacs-startup-hook #'my/start-server-once)
-
-;; `server' is loaded in the Emacs Server section above; dirvish reads
-;; `server-buffer-clients' to avoid killing buffers a client still holds.
 
 (use-package dirvish
   :straight (dirvish :type git :host github :repo "alexluigit/dirvish")

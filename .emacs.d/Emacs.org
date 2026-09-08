@@ -682,19 +682,31 @@ has to be run by hand every session.
 
 Set these in your shell profile so tools reuse the running Emacs:
 #+begin_src sh
-  export EDITOR="emacsclient -t"
-  export VISUAL="emacsclient -c"
+  export EDITOR="emacsclient -t -a ''"
+  export VISUAL="emacsclient -c -a ''"
 #+end_src
+
+The ~-a ''~ matters. Bare ~emacsclient~ aborts with "can't find socket; have
+you started the server?" when no Emacs is running — which kills a ~git commit~
+in a shell opened before Emacs, or after it exits. An empty ~-a~ tells
+~emacsclient~ to start Emacs in daemon mode and connect to that instead, so the
+command works either way. ~-a emacs~ (plain fallback instance) is the other
+reasonable choice.
 
 Finish editing a client buffer with ~C-x #~ (~server-edit~), which returns
 control to the waiting ~emacsclient~ process.
 
 *** Why the guards
-| Guard              | Reason                                                        |
-|--------------------+---------------------------------------------------------------|
-| ~noninteractive~   | Batch runs (e.g. tangling) must not leave a server behind     |
-| ~(daemonp)~        | ~emacs --daemon~ already starts its own server                |
+| Guard                | Reason                                                                   |
+|----------------------+--------------------------------------------------------------------------|
+| ~noninteractive~     | A script that loads this config must not leave a server behind           |
+| ~(daemonp)~          | ~emacs --daemon~ already starts its own server                           |
 | ~(server-running-p)~ | A second GUI instance would fail with "Unable to start the Emacs server" |
+
+The ~noninteractive~ guard does *not* cover the tangle command in ~CLAUDE.md~:
+~--batch~ implies ~-q~, so that run never loads ~init.el~ and never reaches this
+hook. It covers the cases that *do* load the config — ~emacs --batch -l init.el~
+and ~--script~.
 
 ~server-running-p~ returns nil for a stale socket left behind by a crash, and
 ~server-start~ deletes that socket itself — so a hard kill does not require
@@ -706,6 +718,16 @@ manual cleanup.
 - Runs on ~emacs-startup-hook~, after frame setup on ~after-init-hook~.
 - ~server~ is loaded here rather than in the Dirvish block below, which reads
   ~server-buffer-clients~ to avoid killing buffers a client still has open.
+- ~server-start~ is wrapped in ~condition-case~. ~add-hook~ prepends, so this
+  runs *before* ~efs/display-startup-time~ on the same hook — and an error in a
+  hook function aborts the rest of ~run-hooks~. Unwrapped, an unwritable
+  ~server-socket-dir~ or a ~server-use-tcp~ misconfiguration would silently
+  swallow the startup-time message, a symptom pointing nowhere near the server.
+- Auto-starting means every Emacs launch exposes a socket that lets any process
+  able to read ~server-socket-dir~ and the auth file evaluate arbitrary elisp in
+  this Emacs. The default socket dir is ~${TMPDIR}/emacs$UID~ with mode 700, so
+  on a single-user machine this is not a concern — noted only because this flips
+  the server from opt-in-per-session to always-on.
 
 ** Code
 #+begin_src emacs-lisp
@@ -714,10 +736,16 @@ manual cleanup.
   (defun my/start-server-once ()
     "Start the Emacs server unless one is already running.
   Skips batch and daemon sessions, and any session where another Emacs
-  already owns the socket."
+  already owns the socket.  Failures are reported rather than signalled, so
+  they cannot abort the rest of `emacs-startup-hook'."
     (unless (or noninteractive (daemonp) (server-running-p))
-      (server-start)
-      (message "Emacs server started: %s" server-name)))
+      (condition-case err
+          (progn
+            (server-start)
+            (message "Emacs server started: %s" server-name))
+        (error
+         (message "Emacs server failed to start: %s"
+                  (error-message-string err))))))
 
   (add-hook 'emacs-startup-hook #'my/start-server-once)
 #+end_src
@@ -817,9 +845,6 @@ Dirvish integrates with fd for advanced file searching:
 
 ** Code
 #+begin_src emacs-lisp
-  ;; `server' is loaded in the Emacs Server section above; dirvish reads
-  ;; `server-buffer-clients' to avoid killing buffers a client still holds.
-
   (use-package dirvish
     :straight (dirvish :type git :host github :repo "alexluigit/dirvish")
     :init
@@ -1622,18 +1647,18 @@ Git Time Machine lets you step through historic revisions of any git-controlled 
 - Works seamlessly with git-controlled files
 
 *** Key Bindings (when git-timemachine is active)
-| Key     | Command                                      | Description                          |
-|---------+----------------------------------------------+--------------------------------------|
-| ~p~     | git-timemachine-show-previous-revision      | Show previous revision               |
-| ~n~     | git-timemachine-show-next-revision          | Show next revision                   |
-| ~g~     | git-timemachine-show-nth-revision           | Go to nth revision                   |
-| ~t~     | git-timemachine-show-revision               | Go to specific revision by hash      |
-| ~q~     | git-timemachine-quit                        | Exit git time machine                |
-| ~w~     | git-timemachine-kill-abbreviated-revision   | Copy abbreviated revision hash       |
-| ~W~     | git-timemachine-kill-revision               | Copy full revision hash              |
-| ~b~     | git-timemachine-blame                       | Show git blame for current revision  |
-| ~c~     | git-timemachine-show-commit                 | Show commit information              |
-| ~?~     | git-timemachine-help                        | Show help                            |
+| Key | Command                                   | Description                         |
+|-----+-------------------------------------------+-------------------------------------|
+| ~p~ | git-timemachine-show-previous-revision    | Show previous revision              |
+| ~n~ | git-timemachine-show-next-revision        | Show next revision                  |
+| ~g~ | git-timemachine-show-nth-revision         | Go to nth revision                  |
+| ~t~ | git-timemachine-show-revision             | Go to specific revision by hash     |
+| ~q~ | git-timemachine-quit                      | Exit git time machine               |
+| ~w~ | git-timemachine-kill-abbreviated-revision | Copy abbreviated revision hash      |
+| ~W~ | git-timemachine-kill-revision             | Copy full revision hash             |
+| ~b~ | git-timemachine-blame                     | Show git blame for current revision |
+| ~c~ | git-timemachine-show-commit               | Show commit information             |
+| ~?~ | git-timemachine-help                      | Show help                           |
 
 *** Usage Workflow
 1. Open any git-controlled file
@@ -2054,59 +2079,59 @@ The menu (~C-c B m~) provides a convenient interface to access all Claude Code I
 ** Emacs Docker Mode Reference
 
 *** Basic Docker Commands
-    | Command                | Description                    | Keybinding |
-    |-----------------------+--------------------------------+------------|
-    | ~docker~              | Open main Docker menu          | C-c d      |
-    | ~docker-containers~   | List all containers            |            |
-    | ~docker-images~       | List all images                |            |
-    | ~docker-networks~     | List all networks              |            |
-    | ~docker-volumes~      | List all volumes               |            |
+    | Command             | Description           | Keybinding |
+    |---------------------+-----------------------+------------|
+    | ~docker~            | Open main Docker menu | C-c d      |
+    | ~docker-containers~ | List all containers   |            |
+    | ~docker-images~     | List all images       |            |
+    | ~docker-networks~   | List all networks     |            |
+    | ~docker-volumes~    | List all volumes      |            |
 
 *** Container Management
-    | Command                      | Description                          |
-    |------------------------------+--------------------------------------|
-    | ~docker-container-start~     | Start container(s)                  |
-    | ~docker-container-stop~      | Stop container(s)                   |
-    | ~docker-container-restart~   | Restart container(s)                |
-    | ~docker-container-pause~     | Pause container(s)                  |
-    | ~docker-container-unpause~   | Unpause container(s)                |
-    | ~docker-container-rm~        | Remove container(s)                 |
-    | ~docker-container-shells~    | Open shell in container             |
-    | ~docker-container-logs~      | View container logs                 |
+    | Command                    | Description             |
+    |----------------------------+-------------------------|
+    | ~docker-container-start~   | Start container(s)      |
+    | ~docker-container-stop~    | Stop container(s)       |
+    | ~docker-container-restart~ | Restart container(s)    |
+    | ~docker-container-pause~   | Pause container(s)      |
+    | ~docker-container-unpause~ | Unpause container(s)    |
+    | ~docker-container-rm~      | Remove container(s)     |
+    | ~docker-container-shells~  | Open shell in container |
+    | ~docker-container-logs~    | View container logs     |
 
 *** Image Management
-    | Command                | Description                              |
-    |------------------------+------------------------------------------|
-    | ~docker-image-pull~    | Pull an image                           |
-    | ~docker-image-push~    | Push an image                           |
-    | ~docker-image-rm~      | Remove image(s)                         |
-    | ~docker-image-inspect~ | Inspect image                           |
+    | Command                | Description     |
+    |------------------------+-----------------|
+    | ~docker-image-pull~    | Pull an image   |
+    | ~docker-image-push~    | Push an image   |
+    | ~docker-image-rm~      | Remove image(s) |
+    | ~docker-image-inspect~ | Inspect image   |
 
 *** Docker Compose
-    | Command                     | Description                         |
-    |-----------------------------+-------------------------------------|
-    | ~docker-compose-up~         | Start containers                   |
-    | ~docker-compose-down~       | Stop containers                    |
-    | ~docker-compose-restart~    | Restart containers                 |
-    | ~docker-compose-logs~       | View logs                          |
-    | ~docker-compose-build~      | Build services                     |
+    | Command                  | Description        |
+    |--------------------------+--------------------|
+    | ~docker-compose-up~      | Start containers   |
+    | ~docker-compose-down~    | Stop containers    |
+    | ~docker-compose-restart~ | Restart containers |
+    | ~docker-compose-logs~    | View logs          |
+    | ~docker-compose-build~   | Build services     |
 
 *** Dockerfile Mode
-    | Command                | Description                              |
-    |------------------------+------------------------------------------|
-    | ~dockerfile-build-buffer~ | Build Dockerfile from current buffer   |
-    | ~dockerfile-build-no-cache-buffer~ | Build without cache          |
+    | Command                            | Description                          |
+    |------------------------------------+--------------------------------------|
+    | ~dockerfile-build-buffer~          | Build Dockerfile from current buffer |
+    | ~dockerfile-build-no-cache-buffer~ | Build without cache                  |
 
 *** In Container/Image List Buffer
-    | Key     | Description                                  |
-    |---------+----------------------------------------------|
-    | ~?~     | Show help                                    |
-    | ~m~     | Mark item                                    |
-    | ~u~     | Unmark item                                  |
-    | ~t~     | Toggle marks                                 |
-    | ~U~     | Unmark all                                   |
-    | ~RET~   | Select item                                  |
-    | ~q~     | Quit window                                  |
+    | Key   | Description  |
+    |-------+--------------|
+    | ~?~   | Show help    |
+    | ~m~   | Mark item    |
+    | ~u~   | Unmark item  |
+    | ~t~   | Toggle marks |
+    | ~U~   | Unmark all   |
+    | ~RET~ | Select item  |
+    | ~q~   | Quit window  |
 
 *** Tips
     - Use ~M-x customize-group RET docker~ to customize Docker mode settings
