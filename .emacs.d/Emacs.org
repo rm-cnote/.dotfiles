@@ -289,6 +289,15 @@
   (global-auto-revert-mode 1)
 #+end_src
 
+** Saved Places
+Restore point to where it was when a file was last visited. This is global —
+it applies to every file type, not just PDFs — and writes ~~/.emacs.d/places~.
+[[*PDF Tools][PDF Tools]] depends on it: ~saveplace-pdf-view~ teaches it to record a
+page number instead of a character offset.
+#+begin_src emacs-lisp
+  (save-place-mode 1)
+#+end_src
+
 * Themes, Icons, Modeline, Delimiter Matching
 #+begin_src emacs-lisp
   ;;(load-theme 'tango-dark)
@@ -1553,24 +1562,29 @@ is to rebuild rather than reinstall the package.
 
 *** Key Bindings
 **** Navigation
-| Key       | Action                          |
-|-----------+---------------------------------|
-| ~n~ / ~p~ | Next / previous page            |
-| ~SPC~     | Scroll up (page down)           |
-| ~DEL~     | Scroll down (page up)           |
-| ~M-g g~   | Go to page                      |
-| ~o~       | Jump to outline (table of contents) |
-| ~C-c C-r~ | Restore last position           |
+| Key           | Action                                 |
+|---------------+----------------------------------------|
+| ~n~ / ~p~     | Next / previous page                   |
+| ~SPC~         | Scroll up, then on to the next page    |
+| ~DEL~         | Scroll down, then to previous page     |
+| ~M-<~ / ~M->~ | First / last page                      |
+| ~M-g g~       | Go to page                             |
+| ~M-g l~       | Go to page by printed label            |
+| ~o~           | Jump to outline (table of contents)    |
+| ~m~ / ~'~     | Store position to register / jump back |
 
 **** Display
-| Key       | Action                          |
-|-----------+---------------------------------|
-| ~+~ / ~-~ | Zoom in / out                   |
-| ~0~       | Reset zoom                      |
-| ~W~       | Fit page width                  |
-| ~H~       | Fit page height                 |
-| ~P~       | Fit whole page                  |
-| ~m~       | Toggle midnight (dark) mode     |
+| Key         | Action                                      |
+|-------------+---------------------------------------------|
+| ~+~ / ~-~   | Zoom in / out (by ~pdf-view-resize-factor~) |
+| ~0~         | Reset zoom                                  |
+| ~W~         | Fit page width                              |
+| ~H~         | Fit page height                             |
+| ~P~         | Fit whole page                              |
+| ~R~         | Rotate page                                 |
+| ~C-c C-r m~ | Toggle midnight (dark) mode                 |
+| ~C-c C-r t~ | Toggle themed mode (follow Emacs theme)     |
+| ~C-c C-r p~ | Toggle printer mode                         |
 
 **** Search and Selection
 | Key       | Action                          |
@@ -1581,43 +1595,94 @@ is to rebuild rather than reinstall the package.
 | ~C-w~     | Copy selected region text       |
 
 **** Annotations
-| Key       | Action                          |
-|-----------+---------------------------------|
-| ~a l~     | List annotations                |
-| ~a t~     | Add text annotation             |
-| ~a m~     | Add markup (highlight) annotation |
-| ~C-x C-s~ | Save annotations into the file  |
+Annotation commands live under the ~C-c C-a~ prefix
+(~pdf-annot-minor-mode-map-prefix~). The commands that write are bound only
+when poppler reports annotation support — see Notes below.
+
+| Key         | Action                         |
+|-------------+--------------------------------|
+| ~C-c C-a l~ | List annotations               |
+| ~C-c C-a t~ | Add text annotation            |
+| ~C-c C-a m~ | Add markup annotation          |
+| ~C-c C-a h~ | Add highlight annotation       |
+| ~C-c C-a D~ | Delete annotation              |
+| ~C-x C-s~   | Save annotations into the file |
 
 *** Notes
 - ~pdf-view-use-scaling~ is required for sharp rendering on HiDPI/Retina
   displays; without it pages render at logical resolution and look blurry.
 - The ~:magic~ matcher catches PDFs whose filename lacks a ~.pdf~ extension
-  (downloads, attachments, temp files).
+  (downloads, attachments, temp files). It deliberately matches ~%PDF-~ rather
+  than ~%PDF~: ~magic-mode-alist~ is consulted before ~auto-mode-alist~, so a
+  bare ~%PDF~ opens any file whose first line is a ~%~-comment starting with
+  "PDF" — plausible in TeX, Matlab or Octave — in ~pdf-view-mode~, and the
+  ~.tex~ extension does not rescue it.
+- Tightening ~:magic~ is not sufficient on its own. ~pdf-tools-install~ calls
+  ~add-to-list~ on ~magic-mode-alist~ with its own ~pdf-tools-magic-mode-alist-entry~,
+  which is a bare ~%PDF~, so the hole reopens as soon as the package loads. The
+  ~:config~ block removes that entry after install. Verified: with it removed a
+  ~.tex~ file starting ~%PDF output enabled~ opens in ~latex-mode~; without it,
+  ~pdf-view-mode~.
+- ~pdf-tools~ also re-adds its own ~auto-mode-alist~ entry, spelled
+  ~"\\.[pP][dD][fF]\\'"~. That one is harmless — it resolves to the same mode as
+  the plain ~"\\.pdf\\'"~ entry here — so it is left alone.
 - Line numbers are disabled in ~pdf-view-mode~ via the global exclusion list
   in [[*Line and Column Numbers][Line and Column Numbers]].
+- ~pdf-view-resize-factor~ is lowered to 1.1 from the default 1.25, so ~+~ and
+  ~-~ zoom in finer steps.
+- Page restore rides on ~save-place-mode~, enabled globally in
+  [[*Saved Places][Saved Places]]; ~saveplace-pdf-view~ only teaches it to record a
+  PDF page rather than a character offset.
+- Annotation write commands (~C-c C-a t~, ~m~, ~h~, ~D~) are bound at load time
+  only when ~(pdf-info-writable-annotations-p)~ is non-nil, which depends on the
+  poppler build. Check with:
+  #+begin_src emacs-lisp :tangle no
+    (pdf-info-writable-annotations-p)   ; and (pdf-info-markup-annotations-p)
+  #+end_src
+- ~pdf-tools-install~ must stay in ~:config~. The ~:mode~ entry autoloads
+  ~pdf-view-mode~ from ~pdf-tools.el~, but that function actually lives in
+  ~pdf-view.el~; the autoload only resolves because ~pdf-tools-install~ runs at
+  load time and pulls ~pdf-view~ in first. Moving it to ~:init~, or dropping it
+  once the binary is built, yields "Autoloading file ... failed to define
+  function pdf-view-mode". ~pdf-loader-install~ exists for the fully lazy case.
+- Rebuilding the package (a straight.el rebuild, or a poppler upgrade that
+  breaks the dylib link) removes ~epdfinfo~, since straight regenerates the
+  build directory and the binary is compiled by ~pdf-tools-install~ rather than
+  by straight. Symptom is PDFs failing to open after an otherwise unrelated
+  package update; the fix is ~M-x pdf-tools-install~ to recompile.
 
 ** Code
 #+begin_src emacs-lisp
   ;; PDF viewing via poppler instead of doc-view's ghostscript/mupdf path.
   (use-package pdf-tools
-    :mode ("\\.[pP][dD][fF]\\'" . pdf-view-mode)
-    :magic ("%PDF" . pdf-view-mode)
+    ;; `auto-mode-case-fold' is t, so this matches .PDF too.
+    :mode ("\\.pdf\\'" . pdf-view-mode)
+    ;; Every real PDF starts "%PDF-". The trailing dash keeps a TeX or Matlab
+    ;; file opening with a "%PDF ..." comment from being captured, since
+    ;; `magic-mode-alist' is consulted before `auto-mode-alist'.
+    :magic ("%PDF-" . pdf-view-mode)
     :custom
     ;; Sharp rendering on Retina displays.
     (pdf-view-use-scaling t)
     (pdf-view-resize-factor 1.1)
+    (pdf-view-display-size 'fit-page)
+    :bind (:map pdf-view-mode-map
+                ;; C-s is globally `swiper'; use pdf-tools' cross-page isearch.
+                ("C-s" . isearch-forward))
     :config
-    ;; Builds epdfinfo if absent, and registers pdf-view-mode handlers.
+    ;; Builds epdfinfo if absent, registers the pdf-view-mode handlers, and
+    ;; must stay in `:config' -- see Notes on the autoload chain above.
     (pdf-tools-install :no-query)
-    (setq-default pdf-view-display-size 'fit-page)
-    ;; pdf-tools ships its own isearch integration; make C-s use it.
-    (define-key pdf-view-mode-map (kbd "C-s") #'isearch-forward))
+    ;; `pdf-tools-install' unconditionally re-adds its own bare "%PDF" magic
+    ;; entry, which re-opens the TeX/Matlab hole the `:magic' matcher above
+    ;; closes. Drop it and let the stricter "%PDF-" entry stand alone.
+    (setq magic-mode-alist
+          (remove pdf-tools-magic-mode-alist-entry magic-mode-alist)))
 
-  ;; Reopen PDFs on the page you left off at.
+  ;; Reopen PDFs on the page you left off at. Rides on `save-place-mode',
+  ;; enabled in the Saved Places section.
   (use-package saveplace-pdf-view
     :after (pdf-tools saveplace))
-
-  (save-place-mode 1)
 #+end_src
 
 * Version Control
@@ -1669,18 +1734,18 @@ Git Time Machine lets you step through historic revisions of any git-controlled 
 - Works seamlessly with git-controlled files
 
 *** Key Bindings (when git-timemachine is active)
-| Key     | Command                                      | Description                          |
-|---------+----------------------------------------------+--------------------------------------|
-| ~p~     | git-timemachine-show-previous-revision      | Show previous revision               |
-| ~n~     | git-timemachine-show-next-revision          | Show next revision                   |
-| ~g~     | git-timemachine-show-nth-revision           | Go to nth revision                   |
-| ~t~     | git-timemachine-show-revision               | Go to specific revision by hash      |
-| ~q~     | git-timemachine-quit                        | Exit git time machine                |
-| ~w~     | git-timemachine-kill-abbreviated-revision   | Copy abbreviated revision hash       |
-| ~W~     | git-timemachine-kill-revision               | Copy full revision hash              |
-| ~b~     | git-timemachine-blame                       | Show git blame for current revision  |
-| ~c~     | git-timemachine-show-commit                 | Show commit information              |
-| ~?~     | git-timemachine-help                        | Show help                            |
+| Key | Command                                   | Description                         |
+|-----+-------------------------------------------+-------------------------------------|
+| ~p~ | git-timemachine-show-previous-revision    | Show previous revision              |
+| ~n~ | git-timemachine-show-next-revision        | Show next revision                  |
+| ~g~ | git-timemachine-show-nth-revision         | Go to nth revision                  |
+| ~t~ | git-timemachine-show-revision             | Go to specific revision by hash     |
+| ~q~ | git-timemachine-quit                      | Exit git time machine               |
+| ~w~ | git-timemachine-kill-abbreviated-revision | Copy abbreviated revision hash      |
+| ~W~ | git-timemachine-kill-revision             | Copy full revision hash             |
+| ~b~ | git-timemachine-blame                     | Show git blame for current revision |
+| ~c~ | git-timemachine-show-commit               | Show commit information             |
+| ~?~ | git-timemachine-help                      | Show help                           |
 
 *** Usage Workflow
 1. Open any git-controlled file
@@ -2101,59 +2166,59 @@ The menu (~C-c B m~) provides a convenient interface to access all Claude Code I
 ** Emacs Docker Mode Reference
 
 *** Basic Docker Commands
-    | Command                | Description                    | Keybinding |
-    |-----------------------+--------------------------------+------------|
-    | ~docker~              | Open main Docker menu          | C-c d      |
-    | ~docker-containers~   | List all containers            |            |
-    | ~docker-images~       | List all images                |            |
-    | ~docker-networks~     | List all networks              |            |
-    | ~docker-volumes~      | List all volumes               |            |
+    | Command             | Description           | Keybinding |
+    |---------------------+-----------------------+------------|
+    | ~docker~            | Open main Docker menu | C-c d      |
+    | ~docker-containers~ | List all containers   |            |
+    | ~docker-images~     | List all images       |            |
+    | ~docker-networks~   | List all networks     |            |
+    | ~docker-volumes~    | List all volumes      |            |
 
 *** Container Management
-    | Command                      | Description                          |
-    |------------------------------+--------------------------------------|
-    | ~docker-container-start~     | Start container(s)                  |
-    | ~docker-container-stop~      | Stop container(s)                   |
-    | ~docker-container-restart~   | Restart container(s)                |
-    | ~docker-container-pause~     | Pause container(s)                  |
-    | ~docker-container-unpause~   | Unpause container(s)                |
-    | ~docker-container-rm~        | Remove container(s)                 |
-    | ~docker-container-shells~    | Open shell in container             |
-    | ~docker-container-logs~      | View container logs                 |
+    | Command                    | Description             |
+    |----------------------------+-------------------------|
+    | ~docker-container-start~   | Start container(s)      |
+    | ~docker-container-stop~    | Stop container(s)       |
+    | ~docker-container-restart~ | Restart container(s)    |
+    | ~docker-container-pause~   | Pause container(s)      |
+    | ~docker-container-unpause~ | Unpause container(s)    |
+    | ~docker-container-rm~      | Remove container(s)     |
+    | ~docker-container-shells~  | Open shell in container |
+    | ~docker-container-logs~    | View container logs     |
 
 *** Image Management
-    | Command                | Description                              |
-    |------------------------+------------------------------------------|
-    | ~docker-image-pull~    | Pull an image                           |
-    | ~docker-image-push~    | Push an image                           |
-    | ~docker-image-rm~      | Remove image(s)                         |
-    | ~docker-image-inspect~ | Inspect image                           |
+    | Command                | Description     |
+    |------------------------+-----------------|
+    | ~docker-image-pull~    | Pull an image   |
+    | ~docker-image-push~    | Push an image   |
+    | ~docker-image-rm~      | Remove image(s) |
+    | ~docker-image-inspect~ | Inspect image   |
 
 *** Docker Compose
-    | Command                     | Description                         |
-    |-----------------------------+-------------------------------------|
-    | ~docker-compose-up~         | Start containers                   |
-    | ~docker-compose-down~       | Stop containers                    |
-    | ~docker-compose-restart~    | Restart containers                 |
-    | ~docker-compose-logs~       | View logs                          |
-    | ~docker-compose-build~      | Build services                     |
+    | Command                  | Description        |
+    |--------------------------+--------------------|
+    | ~docker-compose-up~      | Start containers   |
+    | ~docker-compose-down~    | Stop containers    |
+    | ~docker-compose-restart~ | Restart containers |
+    | ~docker-compose-logs~    | View logs          |
+    | ~docker-compose-build~   | Build services     |
 
 *** Dockerfile Mode
-    | Command                | Description                              |
-    |------------------------+------------------------------------------|
-    | ~dockerfile-build-buffer~ | Build Dockerfile from current buffer   |
-    | ~dockerfile-build-no-cache-buffer~ | Build without cache          |
+    | Command                            | Description                          |
+    |------------------------------------+--------------------------------------|
+    | ~dockerfile-build-buffer~          | Build Dockerfile from current buffer |
+    | ~dockerfile-build-no-cache-buffer~ | Build without cache                  |
 
 *** In Container/Image List Buffer
-    | Key     | Description                                  |
-    |---------+----------------------------------------------|
-    | ~?~     | Show help                                    |
-    | ~m~     | Mark item                                    |
-    | ~u~     | Unmark item                                  |
-    | ~t~     | Toggle marks                                 |
-    | ~U~     | Unmark all                                   |
-    | ~RET~   | Select item                                  |
-    | ~q~     | Quit window                                  |
+    | Key   | Description  |
+    |-------+--------------|
+    | ~?~   | Show help    |
+    | ~m~   | Mark item    |
+    | ~u~   | Unmark item  |
+    | ~t~   | Toggle marks |
+    | ~U~   | Unmark all   |
+    | ~RET~ | Select item  |
+    | ~q~   | Quit window  |
 
 *** Tips
     - Use ~M-x customize-group RET docker~ to customize Docker mode settings
