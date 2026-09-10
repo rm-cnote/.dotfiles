@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+#
+# claude-acct — run Claude Code under a named account.
+#
+#   claude-acct <account> [claude args...]
+#
+# Claude Code picks its identity from ambient state: a Keychain login, or an
+# OAuth token in the environment. That makes "which account is this session
+# on?" awkward to control from an editor, which execs the binary directly and
+# never sources a shell. This script makes the account an explicit argument.
+#
+# Accounts are configured entirely by environment, so no site-specific values
+# live in this file. For an account named <ACCOUNT> (upper-cased, '-' as '_'):
+#
+#   CLAUDE_ACCT_TOKEN_<ACCOUNT>       the OAuth token itself. Checked first.
+#   CLAUDE_ACCT_TOKEN_REF_<ACCOUNT>   a 1Password secret reference to read the
+#                                     token from, used only if the above is
+#                                     unset. Requires the `op' CLI.
+#   CLAUDE_ACCT_CLAUDE_BIN            path to the real claude binary
+#
+# An account with neither runs under the ambient login, whatever
+# `claude /login' last established. So a two-account setup might be:
+#
+#   export CLAUDE_ACCT_TOKEN_WORK="sk-ant-oat..."          # no 1Password
+#   export CLAUDE_ACCT_TOKEN_REF_WORK="op://Vault/id/cred" # or via 1Password
+#   claude-acct work   # token-authenticated
+#   claude-acct me     # ambient login
+#
+# `op' is entirely optional: it is consulted only for accounts configured with
+# a _REF and no direct token, so setups without 1Password work unchanged.
+#
+# Trade-off worth knowing: a direct token sits in the environment for as long
+# as it is exported, and is inherited by every child process. Reading through
+# `op' instead keeps it out of the environment and makes each session start an
+# explicit, prompted authorization. Prefer _REF where that matters; prefer the
+# direct token where there is no secret manager, or where repeated prompts are
+# not workable (e.g. a tool launching several sessions at once).
+#
+# Either way the token is exported only into the exec'd process: never written
+# to disk, never passed in argv (so it does not appear in `ps').
+
+set -euo pipefail
+
+CLAUDE_BIN="${CLAUDE_ACCT_CLAUDE_BIN:-$HOME/.local/bin/claude}"
+
+die() { printf 'claude-acct: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat >&2 <<'EOF'
+usage: claude-acct <account> [claude args...]
+
+Runs Claude Code under a named account. The token for <ACCOUNT> is taken from
+CLAUDE_ACCT_TOKEN_<ACCOUNT> if set, else read from the 1Password reference in
+CLAUDE_ACCT_TOKEN_REF_<ACCOUNT>, else the session uses the ambient login. The
+1Password CLI is needed only for the _REF form. ANTHROPIC_API_KEY and
+ANTHROPIC_AUTH_TOKEN are cleared for every account, since either would outrank
+both and silently change how the session is billed.
+
+With no account argument, prompts when stdin is a terminal. Non-interactive
+callers (editors, scripts) must pass the account explicitly, so that they know
+which account the session is on.
+
+env:
+  CLAUDE_ACCT_TOKEN_<ACCOUNT>       the account's OAuth token (checked first)
+  CLAUDE_ACCT_TOKEN_REF_<ACCOUNT>   1Password ref to read it from instead
+  CLAUDE_ACCT_CLAUDE_BIN            path to the real claude binary
+EOF
+  exit 2
+}
+
+account="${1:-}"
+case "$account" in
+  -h|--help) usage ;;
+  "")
+    # Interactive fallback for terminal use only.
+    if [ -t 0 ] && [ -t 2 ]; then
+      printf 'Account: ' >&2
+      read -r account
+      [ -n "$account" ] || die "no account given"
+    else
+      die "no account given and stdin is not a terminal"
+    fi
+    ;;
+  *) shift ;;
+esac
+
+# Account names become part of an environment variable name, so keep them to
+# characters that cannot smuggle anything into the lookup.
+case "$account" in
+  *[!A-Za-z0-9_-]*|"") die "invalid account name '${account}'" ;;
+esac
+
+[ -x "$CLAUDE_BIN" ] || die "claude binary not executable: $CLAUDE_BIN"
+
+# Guard against this script shadowing the real claude and exec'ing itself.
+resolve() { if command -v realpath >/dev/null 2>&1; then realpath "$1"; else
+  python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1"; fi; }
+if [ "$(resolve "$CLAUDE_BIN")" = "$(resolve "$0")" ]; then
+  die "CLAUDE_ACCT_CLAUDE_BIN points back at this script; set it to the real claude"
+fi
+
+# An API key outranks BOTH an OAuth token and the Keychain login in Claude
+# Code's auth precedence, silently changing how the session is billed. Clear it
+# for every account, not just token-authenticated ones.
+unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+
+# Account name upper-cased, dashes as underscores, for the env lookups.
+suffix="$(printf '%s' "$account" | tr '[:lower:]-' '[:upper:]_')"
+tok_var="CLAUDE_ACCT_TOKEN_${suffix}"
+ref_var="CLAUDE_ACCT_TOKEN_REF_${suffix}"
+
+token="${!tok_var:-}"
+
+if [ -n "$token" ]; then
+  : # Token supplied directly; no secret manager needed.
+elif [ -n "${!ref_var:-}" ]; then
+  command -v op >/dev/null 2>&1 || die "1Password CLI 'op' not found on PATH (needed for '$account')"
+  # Read per invocation: the 1Password prompt is the authorization step that
+  # makes each token-authenticated start visible. Set $tok_var instead when
+  # that prompt is not wanted (see the header note on the trade-off).
+  if ! token="$(op read "${!ref_var}")"; then
+    die "could not read the token for '$account' from 1Password ($ref_var)"
+  fi
+  [ -n "$token" ] || die "1Password returned an empty token for '$account'"
+else
+  # Nothing configured for this account: use the ambient login.
+  exec "$CLAUDE_BIN" "$@"
+fi
+
+export CLAUDE_CODE_OAUTH_TOKEN="$token"
+unset token
+exec "$CLAUDE_BIN" "$@"
