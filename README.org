@@ -106,10 +106,12 @@ values. For an account (upper-cased, ~-~ as ~_~) the token comes from the first
 of these that is set, and a session with neither runs under whatever
 ~claude /login~ last established:
 
-| Variable                          | Meaning                                      |
-|-----------------------------------+----------------------------------------------|
-| ~CLAUDE_ACCT_TOKEN_<ACCOUNT>~     | The OAuth token itself. Checked first.       |
-| ~CLAUDE_ACCT_TOKEN_REF_<ACCOUNT>~ | A 1Password reference to read it from        |
+| Variable                          | Meaning                                                |
+|-----------------------------------+--------------------------------------------------------|
+| ~CLAUDE_ACCT_TOKEN_<ACCOUNT>~     | The OAuth token itself. Checked first.                 |
+| ~CLAUDE_ACCT_TOKEN_REF_<ACCOUNT>~ | A 1Password reference to read it from                  |
+| ~CLAUDE_ACCT_AMBIENT_<ACCOUNT>~   | Declare that this account uses the ambient login       |
+| ~CLAUDE_ACCT_CLAUDE_BIN~          | Path to the real =claude= binary                       |
 
 #+begin_src bash
 export CLAUDE_ACCT_TOKEN_WORK="sk-ant-oat..."           # no secret manager
@@ -130,10 +132,13 @@ auth precedence, so a stray key silently changes how the session is billed —
 and Emacs inherits the login shell's environment wholesale, so a key set once
 reaches every session it spawns.
 
+An account with no token runs under the ambient login and says so on stderr,
+since that is also what a typo'd account name looks like; declaring
+~CLAUDE_ACCT_AMBIENT_<ACCOUNT>~ states the intent and silences the notice.
+
 Emacs picks the account per directory and invokes this script; see the Account
-Selection section of =Emacs.org=. Token-based accounts need the
-[[https://developer.1password.com/docs/cli/][1Password CLI]] (~op~). ~CLAUDE_ACCT_CLAUDE_BIN~ overrides the path to the real
-=claude= binary.
+Selection section of =Emacs.org=. The script must be on ~PATH~ — the install
+step above links it into =~/.local/bin=.
 
 * Dependencies
 
@@ -142,10 +147,12 @@ Selection section of =Emacs.org=. Token-based accounts need the
 - Git
 - [[https://github.com/tonsky/FiraCode][Fira Code]] and [[https://fonts.google.com/specimen/Cantarell][Cantarell]] fonts
 - Node.js (for Mermaid diagrams)
-- [[https://developer.1password.com/docs/cli/][1Password CLI]] (~op~) — for token-based accounts in ~bin/claude-acct~
 
 ** Optional Dependencies
 
+- [[https://developer.1password.com/docs/cli/][1Password CLI]] (~op~) — only for ~bin/claude-acct~ accounts configured with
+  ~CLAUDE_ACCT_TOKEN_REF_*~; accounts using a direct token or the ambient login
+  do not need it
 - pyenv or similar for Python virtual environment management
 - [[https://www.nerdfonts.com/][nerd-fonts]] for icons
 

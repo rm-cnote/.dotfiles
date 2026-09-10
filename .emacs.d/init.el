@@ -1413,7 +1413,6 @@ can match it against real paths."
   ;; as the first argument to `my/claude-account-program'. Inert until that is
   ;; set. See the Reference above for the wrapper contract.
   (declare-function claude-code--directory "claude-code")
-  (declare-function claude-code "claude-code")
   (defvar claude-code-program)
   (defvar claude-code-program-switches)
   (defvar claude-code-command-map)
@@ -1433,8 +1432,12 @@ selection is disabled and Claude starts via `claude-code-program'."
     "The plain Claude program `claude-code-program' normally holds.
 Account selection stands down whenever `claude-code-program' differs
 from this, so that commands which rebind it (e.g. `claude-code-sandbox')
-keep working."
-    :type '(choice (const :tag "Unset" nil) file)
+keep working.
+
+Left nil, it is captured from `claude-code-program' once `claude-code'
+loads.  Setting it by hand duplicates that value, and the two drifting
+apart disables the feature silently."
+    :type '(choice (const :tag "Capture from `claude-code-program'" nil) file)
     :group 'my/claude-account)
 
   (defcustom my/claude-account-choices nil
@@ -1504,7 +1507,11 @@ Bound by `my/claude-code-with-account'; nil means consult the directory.")
     "Run Claude through `my/claude-account-program' under the chosen account.
 Stands down when the feature is disabled or another command has already
 rebound `claude-code-program'."
+    (when (and my/claude-account-program (null my/claude-account-base-program))
+      (warn "my/claude-account-base-program was never captured; \
+Claude account selection is inactive"))
     (if (or (null my/claude-account-program)
+            (null my/claude-account-base-program)
             (not (equal claude-code-program my/claude-account-base-program)))
         (apply orig args)
       (let* ((account (or my/claude-account--override
@@ -1549,30 +1556,45 @@ way as starting one."
     "Import the wrapper's environment variables for each configured account.
 `exec-path-from-shell' copies only PATH and MANPATH by default, so a
 GUI-launched Emacs would not see them.  Without them the wrapper cannot
-tell a token-authenticated account from an ambient-login one, and quietly
-uses the ambient login.  Costs one subshell at startup."
-    (when (fboundp 'exec-path-from-shell-copy-envs)
+tell a token-authenticated account from an ambient-login one.
+
+Only done where Emacs did not inherit a shell environment -- a window
+system or a daemon -- since it costs a subshell.  A terminal Emacs
+already has them."
+    (when (and (fboundp 'exec-path-from-shell-copy-envs)
+               (or (memq window-system '(mac ns x pgtk w32)) (daemonp)))
       (exec-path-from-shell-copy-envs
        (mapcan (lambda (account)
                  (let ((suffix (upcase (replace-regexp-in-string "-" "_" account))))
                    (list (concat "CLAUDE_ACCT_TOKEN_" suffix)
-                         (concat "CLAUDE_ACCT_TOKEN_REF_" suffix))))
+                         (concat "CLAUDE_ACCT_TOKEN_REF_" suffix)
+                         (concat "CLAUDE_ACCT_AMBIENT_" suffix))))
                my/claude-account-choices))))
 
   ;; Local, site-specific wiring. Everything above is generic; this points the
   ;; feature at a particular wrapper and names the accounts it accepts.
-  (setq my/claude-account-program (expand-file-name "~/.local/bin/claude-acct")
-        my/claude-account-base-program (expand-file-name "~/.local/bin/claude")
-        my/claude-account-choices '("max" "team"))
+  ;; `my/claude-account-base-program' is deliberately left unset: it is captured
+  ;; from `claude-code-program' below, so the two cannot drift apart.
+  (setopt my/claude-account-program (expand-file-name "~/.local/bin/claude-acct")
+          my/claude-account-choices '("max" "team")
+          my/claude-account-default "max")
   (my/claude-account-import-env)
 
   (with-eval-after-load 'claude-code
-    (unless (fboundp 'claude-code--start)
-      (warn "claude-code--start is missing; Claude account selection is inactive"))
-    (advice-add 'claude-code--start :around #'my/claude-account--around-start)
-    (add-hook 'claude-code-start-hook #'my/claude-account--record)
-    (define-key claude-code-command-map (kbd "a") #'my/claude-code-with-account)
-    (define-key claude-code-command-map (kbd "A") #'my/claude-account-show))
+    ;; Capture the plain program rather than restating it, so the equality test
+    ;; in `my/claude-account--around-start' cannot be broken by editing one of
+    ;; two copies. Runs after claude-code applies its own customizations.
+    (unless my/claude-account-base-program
+      (setq my/claude-account-base-program claude-code-program))
+    (dolist (key '("a" "A"))
+      (when (lookup-key claude-code-command-map (kbd key))
+        (warn "Claude account selection is shadowing an existing %s binding" key)))
+    (if (not (fboundp 'claude-code--start))
+        (warn "claude-code--start is missing; Claude account selection is inactive")
+      (advice-add 'claude-code--start :around #'my/claude-account--around-start)
+      (add-hook 'claude-code-start-hook #'my/claude-account--record)
+      (define-key claude-code-command-map (kbd "a") #'my/claude-code-with-account)
+      (define-key claude-code-command-map (kbd "A") #'my/claude-account-show)))
 
 ;; Claude Code IDE - Enhanced IDE features for Claude Code
 (use-package claude-code-ide

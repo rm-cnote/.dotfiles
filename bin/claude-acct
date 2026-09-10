@@ -16,15 +16,21 @@
 #   CLAUDE_ACCT_TOKEN_REF_<ACCOUNT>   a 1Password secret reference to read the
 #                                     token from, used only if the above is
 #                                     unset. Requires the `op' CLI.
+#   CLAUDE_ACCT_AMBIENT_<ACCOUNT>     set to declare that this account
+#                                     deliberately uses the ambient login
 #   CLAUDE_ACCT_CLAUDE_BIN            path to the real claude binary
 #
-# An account with neither runs under the ambient login, whatever
-# `claude /login' last established. So a two-account setup might be:
+# An account with no token runs under the ambient login, whatever
+# `claude /login' last established, and says so on stderr -- because that is
+# also what a typo'd account name or an unexported variable looks like, and the
+# script cannot tell them apart. Setting CLAUDE_ACCT_AMBIENT_<ACCOUNT> declares
+# the intent and silences the notice. So a two-account setup might be:
 #
 #   export CLAUDE_ACCT_TOKEN_WORK="sk-ant-oat..."          # no 1Password
 #   export CLAUDE_ACCT_TOKEN_REF_WORK="op://Vault/id/cred" # or via 1Password
+#   export CLAUDE_ACCT_AMBIENT_ME=1
 #   claude-acct work   # token-authenticated
-#   claude-acct me     # ambient login
+#   claude-acct me     # ambient login, quietly
 #
 # `op' is entirely optional: it is consulted only for accounts configured with
 # a _REF and no direct token, so setups without 1Password work unchanged.
@@ -37,7 +43,11 @@
 # not workable (e.g. a tool launching several sessions at once).
 #
 # Either way the token is exported only into the exec'd process: never written
-# to disk, never passed in argv (so it does not appear in `ps').
+# to disk, never passed in argv (so it does not appear in `ps'). Note that an
+# exported token is still readable from /proc/<pid>/environ by the same user on
+# Linux, and that an editor which imports it into its own environment hands it
+# to every subprocess it spawns, not just Claude -- see the note on importing
+# these variables in .emacs.d/Emacs.org.
 
 set -euo pipefail
 
@@ -63,6 +73,8 @@ which account the session is on.
 env:
   CLAUDE_ACCT_TOKEN_<ACCOUNT>       the account's OAuth token (checked first)
   CLAUDE_ACCT_TOKEN_REF_<ACCOUNT>   1Password ref to read it from instead
+  CLAUDE_ACCT_AMBIENT_<ACCOUNT>     declare that this account uses the
+                                    ambient login, silencing the notice
   CLAUDE_ACCT_CLAUDE_BIN            path to the real claude binary
 EOF
   exit 2
@@ -71,12 +83,19 @@ EOF
 account="${1:-}"
 case "$account" in
   -h|--help) usage ;;
+  # Reject anything option-shaped before it can be taken for an account. Without
+  # this, `claude-acct --resume' consumes the flag as the account name, finds no
+  # token for it, and execs claude with no arguments under the ambient login --
+  # wrong account and wrong command, silently. It also catches the case where a
+  # caller's argument order drifts and the account stops being $1.
+  -*) die "expected an account name, got the option '${account}'" ;;
   "")
     # Interactive fallback for terminal use only.
     if [ -t 0 ] && [ -t 2 ]; then
       printf 'Account: ' >&2
       read -r account
       [ -n "$account" ] || die "no account given"
+      case "$account" in -*) die "expected an account name, got '${account}'" ;; esac
     else
       die "no account given and stdin is not a terminal"
     fi
@@ -85,7 +104,8 @@ case "$account" in
 esac
 
 # Account names become part of an environment variable name, so keep them to
-# characters that cannot smuggle anything into the lookup.
+# characters that cannot smuggle anything into the lookup. Note that '-' and '_'
+# fold together in that name, so "a-b" and "a_b" would share one token variable.
 case "$account" in
   *[!A-Za-z0-9_-]*|"") die "invalid account name '${account}'" ;;
 esac
@@ -93,9 +113,25 @@ esac
 [ -x "$CLAUDE_BIN" ] || die "claude binary not executable: $CLAUDE_BIN"
 
 # Guard against this script shadowing the real claude and exec'ing itself.
-resolve() { if command -v realpath >/dev/null 2>&1; then realpath "$1"; else
-  python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1"; fi; }
-if [ "$(resolve "$CLAUDE_BIN")" = "$(resolve "$0")" ]; then
+# The shell fallback keeps this working where neither realpath (not on older
+# macOS) nor python3 (needs the Xcode CLT) is present -- without it both sides
+# resolve to the empty string, compare equal, and the script dies claiming a
+# self-reference that isn't there. That fallback resolves the directory but not
+# a symlinked final component, so it can miss a self-reference reached through a
+# link; this guard is a check against misconfiguration, not a security control.
+resolve() {
+  if command -v realpath >/dev/null 2>&1; then realpath "$1"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1"
+  else
+    ( cd "$(dirname -- "$1")" 2>/dev/null || exit 1
+      printf '%s/%s\n' "$(pwd -P)" "$(basename -- "$1")" )
+  fi
+}
+self="$(resolve "$0" || true)"
+target="$(resolve "$CLAUDE_BIN" || true)"
+# Only meaningful if both resolved; a failure here must not masquerade as a match.
+if [ -n "$self" ] && [ -n "$target" ] && [ "$self" = "$target" ]; then
   die "CLAUDE_ACCT_CLAUDE_BIN points back at this script; set it to the real claude"
 fi
 
@@ -123,7 +159,17 @@ elif [ -n "${!ref_var:-}" ]; then
   fi
   [ -n "$token" ] || die "1Password returned an empty token for '$account'"
 else
-  # Nothing configured for this account: use the ambient login.
+  # Nothing configured for this account. That is a legitimate setup -- it is how
+  # an ambient-login account is expressed -- but it is also exactly what a typo'd
+  # account name looks like, or a variable that never reached a GUI editor. The
+  # script cannot tell those apart, so it says so rather than starting quietly on
+  # the wrong account. Declaring the account ambient states the intent and
+  # silences the notice.
+  amb_var="CLAUDE_ACCT_AMBIENT_${suffix}"
+  if [ -z "${!amb_var:-}" ]; then
+    printf 'claude-acct: no token configured for %s (%s and %s are unset); using the ambient login. Set %s=1 if that is intended.\n' \
+      "$account" "$tok_var" "$ref_var" "$amb_var" >&2
+  fi
   exec "$CLAUDE_BIN" "$@"
 fi
 
