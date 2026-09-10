@@ -290,11 +290,26 @@ covers only file-visiting buffers, so a Dired listing goes stale as soon as
 files are added or removed outside Emacs — ~global-auto-revert-non-file-buffers~
 extends it to Dired, ~buffer-menu~ and the like.
 
-Auto-revert never discards work: a buffer with unsaved changes is left alone
-until you revert it yourself.
+Reverts are event-driven, not polled: ~auto-revert-use-notify~ defaults to ~t~,
+and a non-file buffer gets a filesystem watch on its directory, after which
+~auto-revert-interval~ no longer applies to it. So silencing
+~auto-revert-verbose~ suppresses a message per *real* change rather than a
+steady tick — worth knowing, because that message was also the only signal that
+a file you were reading had been rewritten underneath you.
+
+For a file-visiting buffer, auto-revert never discards work: one with unsaved
+changes is skipped until you revert it yourself. A Dired buffer is never
+"modified" in that sense, so it always reverts — but ~dired-revert~ preserves
+marks and point, which is the thing actually worth protecting there.
+
+~dired-auto-revert-buffer~ covers a gap the watches leave: they are not
+recursive, and a buffer holding a watch is no longer polled, so a subdirectory
+inserted with ~i~ can still show a stale listing. Reverting on revisit closes
+that cheaply.
 #+begin_src emacs-lisp
   (setq global-auto-revert-non-file-buffers t  ; Dired, buffer-menu, ...
-        auto-revert-verbose nil)               ; no "Reverting buffer..." churn
+        auto-revert-verbose nil                ; no message per real change
+        dired-auto-revert-buffer t)            ; refresh on revisiting a directory
   (global-auto-revert-mode 1)
 #+end_src
 
