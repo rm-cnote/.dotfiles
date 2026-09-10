@@ -285,7 +285,16 @@
 #+end_src
 
 ** Global Auto Revert
+Keep buffers in step with the filesystem. ~global-auto-revert-mode~ on its own
+covers only file-visiting buffers, so a Dired listing goes stale as soon as
+files are added or removed outside Emacs — ~global-auto-revert-non-file-buffers~
+extends it to Dired, ~buffer-menu~ and the like.
+
+Auto-revert never discards work: a buffer with unsaved changes is left alone
+until you revert it yourself.
 #+begin_src emacs-lisp
+  (setq global-auto-revert-non-file-buffers t  ; Dired, buffer-menu, ...
+        auto-revert-verbose nil)               ; no "Reverting buffer..." churn
   (global-auto-revert-mode 1)
 #+end_src
 

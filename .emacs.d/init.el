@@ -248,6 +248,8 @@ For 1 standard display (<=1920px): maximize single frame."
                     :height efs/default-variable-font-size
                     :weight 'regular)
 
+(setq global-auto-revert-non-file-buffers t  ; Dired, buffer-menu, ...
+      auto-revert-verbose nil)               ; no "Reverting buffer..." churn
 (global-auto-revert-mode 1)
 
 (save-place-mode 1)
