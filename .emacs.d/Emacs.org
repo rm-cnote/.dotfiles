@@ -2185,6 +2185,362 @@ can match it against real paths."
     (claude-code-mode))
 #+end_src
 
+** Account Selection
+*** Reference
+Claude Code can be logged into more than one account, and which one a session
+uses is normally decided by ambient shell state — a wrapper function, an
+exported token — that Emacs never sees. ~claude-code.el~ sets ~vterm-shell~ to
+the program string and execs the binary directly, never sourcing a shell, so
+shell functions and aliases are invisible to it.
+
+This section selects the account per project instead: ~claude-code-program~ is
+swapped for a wrapper script and the account is passed as its first argument.
+Swapping the program is the same mechanism ~claude-code-sandbox~ uses upstream,
+so nothing internal to ~claude-code.el~ is patched — only the public
+~claude-code-program~ and ~claude-code-program-switches~ variables.
+
+Which directory gets which account is declared in ~.dir-locals.el~, not
+configured here, so no site-specific policy lives in this file.
+
+The feature is inert until ~my/claude-account-program~ is set. With it unset
+(the default), sessions start exactly as they would without this section.
+
+*** The wrapper contract
+Any executable will do, provided it accepts the account as its first argument
+and passes the rest through to Claude:
+
+#+begin_src sh
+  <program> <account> [claude args...]
+#+end_src
+
+It is responsible for whatever the account means — selecting a login, exporting
+a token, choosing a config directory. [[file:../bin/claude-acct][bin/claude-acct]] is one such wrapper.
+Point ~my/claude-account-program~ at it, or at your own:
+
+#+begin_src emacs-lisp :tangle no
+  (setq my/claude-account-program (expand-file-name "~/.local/bin/claude-acct")
+        my/claude-account-base-program (expand-file-name "~/.local/bin/claude")
+        my/claude-account-choices '("max" "team"))
+#+end_src
+
+~my/claude-account-base-program~ must equal ~claude-code-program~, or account
+selection stands down — see Troubleshooting.
+
+*** Getting the wrapper's environment into Emacs
+Whatever the wrapper needs in the environment must be visible to *Emacs*, not
+just to your shell. A GUI-launched Emacs inherits almost nothing, and
+~exec-path-from-shell~ copies only ~PATH~ and ~MANPATH~ unless asked otherwise
+— so ~my/claude-account-import-env~ requests the wrapper's per-account
+variables explicitly. It derives their names from ~my/claude-account-choices~,
+so adding an account needs no change there, at the cost of one subshell at
+startup.
+
+If a variable does not arrive, the wrapper says so on stderr and falls back to
+the ambient login — it cannot tell "this account has no token" from "the
+variable never reached me", so it reports rather than guessing. That notice
+lands in the session's terminal buffer. Check from Emacs directly with:
+
+#+begin_src emacs-lisp :tangle no
+  (getenv "CLAUDE_ACCT_TOKEN_REF_MAX")   ; nil means Emacs cannot see it
+#+end_src
+
+*Prefer the ~_REF~ form for the Emacs path.* Importing a variable puts it in the
+global ~process-environment~, which every subprocess Emacs spawns inherits —
+shells, LSP servers, ~compile~ buffers, Magit — not just Claude. With
+~CLAUDE_ACCT_TOKEN_<ACCOUNT>~ that means handing a long-lived credential to all
+of them; the reference form imports only a pointer, and the token itself exists
+solely in the wrapper's own process. This is the one context where the
+difference between the two forms really matters.
+
+Accounts that deliberately use the ambient login should declare
+~CLAUDE_ACCT_AMBIENT_<ACCOUNT>~, which states the intent and silences the
+notice. It is imported alongside the others.
+
+*** Declaring an account for a directory
+Put the account in the directory's ~.dir-locals.el~:
+
+#+begin_src emacs-lisp :tangle no
+  ((nil . ((my/claude-account . "team"))))
+#+end_src
+
+Or interactively, from any file in the tree:
+
+: M-x add-dir-local-variable RET nil RET my/claude-account RET "team" RET
+
+Directories with no declaration use ~my/claude-account-default~, falling back
+to the first entry in ~my/claude-account-choices~. Because ~.dir-locals.el~
+applies to a whole tree, one declaration at a project root covers everything
+beneath it, and a nested ~.dir-locals.el~ overrides it for a subtree.
+
+The value is read from the directory the session will run in, not the buffer
+you invoke from, so it stays correct when starting Claude from elsewhere.
+
+Only values in ~my/claude-account-choices~ are accepted. This is deliberate:
+the account becomes a command-line argument, so an unrecognised value in a
+checked-out repository's ~.dir-locals.el~ is ignored rather than passed to the
+wrapper, and Emacs never prompts to mark it safe.
+
+*** Key bindings
+| Key       | Action                                                     |
+|-----------+------------------------------------------------------------|
+| ~C-c C c~ | Start Claude; account from ~.dir-locals.el~ or the default |
+| ~C-c C a~ | Prompt for an account, then a command key to run under it  |
+| ~C-c C A~ | Report which account the current Claude buffer uses        |
+
+~C-c C a~ prompts with the directory's account pre-selected, so accepting it is
+just ~RET~, and then reads one more key naming the command to run under that
+account. It reads from ~claude-code-command-map~, so the keys are the ones you
+already know:
+
+| Sequence      | Effect                                |
+|---------------+---------------------------------------|
+| ~C-c C a~ ~c~ | Start a session on the chosen account |
+| ~C-c C a~ ~C~ | Continue the most recent conversation |
+| ~C-c C a~ ~R~ | Resume a previous conversation        |
+| ~C-c C a~ ~i~ | New named instance                    |
+| ~C-c C a~ ~d~ | Start in a prompted directory         |
+
+Composing this way keeps the account orthogonal to *how* a session starts,
+rather than offering it only on a fresh one. A prefix argument cannot be used
+to force the prompt instead: ~claude-code~ already consumes single and double
+prefix args for switch-to-buffer and directory selection.
+
+*** Customization
+| Variable                         | Default | Purpose                                         |
+|----------------------------------+---------+-------------------------------------------------|
+| ~my/claude-account-program~      | ~nil~   | Wrapper script; ~nil~ disables the feature      |
+| ~my/claude-account-base-program~ | ~nil~   | Plain Claude; must equal ~claude-code-program~  |
+| ~my/claude-account-choices~      | ~nil~   | Accounts the wrapper accepts                    |
+| ~my/claude-account-default~      | ~nil~   | Account when a directory declares none          |
+| ~my/claude-account~              | ~nil~   | Per-directory account, set via ~.dir-locals.el~ |
+
+*** Notes
+- Sessions record their account in the buffer-local ~my/claude-account-session~,
+  which is what ~C-c C A~ reports. It reflects what Emacs *asked for*; the
+  authority on what a running session actually used is Claude's own ~/status~.
+- ~C-u C-u C-c C c~ prompts for a directory *after* the account has been
+  resolved from the invoking context, so the account may not match the
+  directory finally chosen. Use ~C-c C a~ when that matters.
+- ~claude-code-sandbox~ let-binds ~claude-code-program~ itself. The advice
+  detects that and leaves it alone, so sandbox sessions are unaffected.
+- Every ~claude-code.el~ entry point (~claude-code~, ~claude-code-continue~,
+  ~claude-code-resume~, ~claude-code-new-instance~) funnels through
+  ~claude-code--start~, so all of them pick up the account.
+
+*** Troubleshooting
+- *Sessions ignore the account entirely.* Either ~my/claude-account-program~ is
+  ~nil~ (the feature is off), or ~claude-code-program~ has drifted from
+  ~my/claude-account-base-program~ — the advice stands down when something else
+  has rebound the program, and says nothing. Check both:
+  #+begin_src emacs-lisp :tangle no
+    (and my/claude-account-program
+         (equal claude-code-program my/claude-account-base-program))  ; must be non-nil
+  #+end_src
+  A stood-down session can be indistinguishable from a correctly selected one,
+  so confirm with the account's own diagnostics rather than by appearance.
+- *A directory's ~.dir-locals.el~ is ignored.* The value must be a member of
+  ~my/claude-account-choices~; anything else is silently skipped. Check what a
+  directory resolves to without starting a session:
+  #+begin_src emacs-lisp :tangle no
+    (my/claude-account-for-directory "~/some/project")
+  #+end_src
+- *Starting a session hangs.* If the wrapper needs to prompt for a credential,
+  it may be waiting for a terminal Emacs cannot give it. Kill with ~C-c C k~ and
+  pre-authorize outside Emacs.
+- *No account reported for a buffer.* Sessions started before this section
+  loaded carry no record. Restart them to tag them.
+
+*** Code
+#+begin_src emacs-lisp
+  ;; Select which Claude Code account a session runs under, per directory.
+  ;; Directories declare an account in `.dir-locals.el'; the account is passed
+  ;; as the first argument to `my/claude-account-program'. Inert until that is
+  ;; set. See the Reference above for the wrapper contract.
+  (declare-function claude-code--directory "claude-code")
+  (defvar claude-code-program)
+  (defvar claude-code-program-switches)
+  (defvar claude-code-command-map)
+
+  (defgroup my/claude-account nil
+    "Per-directory account selection for Claude Code sessions."
+    :group 'claude-code)
+
+  (defcustom my/claude-account-program nil
+    "Wrapper program that runs Claude under a named account.
+Invoked as PROGRAM ACCOUNT [claude args...].  When nil, account
+selection is disabled and Claude starts via `claude-code-program'."
+    :type '(choice (const :tag "Disabled" nil) file)
+    :group 'my/claude-account)
+
+  (defcustom my/claude-account-base-program nil
+    "The plain Claude program `claude-code-program' normally holds.
+Account selection stands down whenever `claude-code-program' differs
+from this, so that commands which rebind it (e.g. `claude-code-sandbox')
+keep working.
+
+Left nil, it is captured from `claude-code-program' once `claude-code'
+loads.  Setting it by hand duplicates that value, and the two drifting
+apart disables the feature silently."
+    :type '(choice (const :tag "Capture from `claude-code-program'" nil) file)
+    :group 'my/claude-account)
+
+  (defcustom my/claude-account-choices nil
+    "Accounts `my/claude-account-program' accepts.
+Also the set of values allowed in `.dir-locals.el'."
+    :type '(repeat string)
+    :group 'my/claude-account)
+
+  (defcustom my/claude-account-default nil
+    "Account for directories that declare none.
+When nil, the first entry of `my/claude-account-choices' is used."
+    :type '(choice (const :tag "First choice" nil) string)
+    :group 'my/claude-account)
+
+  (defvar my/claude-account nil
+    "Account to run Claude Code under in this directory.
+Intended to be set from a directory's `.dir-locals.el', e.g.
+
+    ((nil . ((my/claude-account . \"team\"))))")
+
+  (defun my/claude-account-valid-p (value)
+    "Return non-nil if VALUE is an account this configuration accepts."
+    (and (stringp value) (member value my/claude-account-choices) t))
+
+  ;; Restricting to known accounts keeps a checked-out repository from
+  ;; injecting an arbitrary command-line argument, and avoids a safety prompt.
+  (put 'my/claude-account 'safe-local-variable #'my/claude-account-valid-p)
+
+  (defvar my/claude-account--override nil
+    "Account for the session currently being started.
+Bound by `my/claude-code-with-account'; nil means consult the directory.")
+
+  (defvar-local my/claude-account-session nil
+    "Account this Claude buffer was started under, or nil if unknown.")
+
+  (defun my/claude-account--from-dir-locals (dir)
+    "Return the account DIR declares in `.dir-locals.el', or nil."
+    (when (and dir (file-directory-p dir))
+      (with-temp-buffer
+        ;; Must end in a slash: otherwise the last component is taken for a
+        ;; file name and dir-local lookup starts from DIR's parent.
+        (setq default-directory (file-name-as-directory (expand-file-name dir)))
+        (let ((enable-local-variables :safe))
+          (hack-dir-local-variables-non-file-buffer))
+        (and (local-variable-p 'my/claude-account)
+             (my/claude-account-valid-p my/claude-account)
+             my/claude-account))))
+
+  (defun my/claude-account-for-directory (dir)
+    "Return the account to use for DIR."
+    (or (my/claude-account--from-dir-locals (or dir default-directory))
+        my/claude-account-default
+        (car my/claude-account-choices)))
+
+  (defun my/claude-account--current-directory ()
+    "Directory the pending Claude session will run in."
+    (or (ignore-errors (claude-code--directory)) default-directory))
+
+  (defun my/claude-account-read ()
+    "Prompt for an account, defaulting to the one the directory declares."
+    (let ((default (my/claude-account-for-directory
+                    (my/claude-account--current-directory))))
+      (completing-read (format "Claude account (default %s): " default)
+                       my/claude-account-choices nil t nil nil default)))
+
+  (defun my/claude-account--around-start (orig &rest args)
+    "Run Claude through `my/claude-account-program' under the chosen account.
+Stands down when the feature is disabled or another command has already
+rebound `claude-code-program'."
+    (when (and my/claude-account-program (null my/claude-account-base-program))
+      (warn "my/claude-account-base-program was never captured; \
+Claude account selection is inactive"))
+    (if (or (null my/claude-account-program)
+            (null my/claude-account-base-program)
+            (not (equal claude-code-program my/claude-account-base-program)))
+        (apply orig args)
+      (let* ((account (or my/claude-account--override
+                          (my/claude-account-for-directory
+                           (my/claude-account--current-directory))))
+             (claude-code-program my/claude-account-program)
+             (claude-code-program-switches
+              (cons account claude-code-program-switches))
+             (my/claude-account--override account))
+        (apply orig args))))
+
+  (defun my/claude-account--record ()
+    "Record the account on the Claude buffer, from `claude-code-start-hook'."
+    (setq-local my/claude-account-session my/claude-account--override))
+
+  (defun my/claude-code-with-account ()
+    "Prompt for an account, then run a Claude Code command under it.
+After choosing, press the `claude-code-command-map' key for the command
+to run: c to start, C to continue, R to resume, i for a new instance,
+d to start in a directory.  The account applies to whichever of them
+starts the session, so resuming under a chosen account works the same
+way as starting one."
+    (interactive)
+    (let* ((account (my/claude-account-read))
+           (my/claude-account--override account)
+           (key (read-key-sequence-vector
+                 (format "Claude as %s -- command key (c C R i d): " account)))
+           (cmd (lookup-key claude-code-command-map key)))
+      (cond
+       ((commandp cmd) (call-interactively cmd))
+       ((keymapp cmd) (message "%s is a prefix key" (key-description key)))
+       (t (message "No Claude Code command on %s" (key-description key))))))
+
+  (defun my/claude-account-show ()
+    "Report which account the current Claude buffer is running under."
+    (interactive)
+    (message "Claude account: %s"
+             (or my/claude-account-session
+                 "not recorded for this buffer")))
+
+  (defun my/claude-account-import-env ()
+    "Import the wrapper's environment variables for each configured account.
+`exec-path-from-shell' copies only PATH and MANPATH by default, so a
+GUI-launched Emacs would not see them.  Without them the wrapper cannot
+tell a token-authenticated account from an ambient-login one.
+
+Only done where Emacs did not inherit a shell environment -- a window
+system or a daemon -- since it costs a subshell.  A terminal Emacs
+already has them."
+    (when (and (fboundp 'exec-path-from-shell-copy-envs)
+               (or (memq window-system '(mac ns x pgtk w32)) (daemonp)))
+      (exec-path-from-shell-copy-envs
+       (mapcan (lambda (account)
+                 (let ((suffix (upcase (replace-regexp-in-string "-" "_" account))))
+                   (list (concat "CLAUDE_ACCT_TOKEN_" suffix)
+                         (concat "CLAUDE_ACCT_TOKEN_REF_" suffix)
+                         (concat "CLAUDE_ACCT_AMBIENT_" suffix))))
+               my/claude-account-choices))))
+
+  ;; Local, site-specific wiring. Everything above is generic; this points the
+  ;; feature at a particular wrapper and names the accounts it accepts.
+  ;; `my/claude-account-base-program' is deliberately left unset: it is captured
+  ;; from `claude-code-program' below, so the two cannot drift apart.
+  (setopt my/claude-account-program (expand-file-name "~/.local/bin/claude-acct")
+          my/claude-account-choices '("max" "team")
+          my/claude-account-default "max")
+  (my/claude-account-import-env)
+
+  (with-eval-after-load 'claude-code
+    ;; Capture the plain program rather than restating it, so the equality test
+    ;; in `my/claude-account--around-start' cannot be broken by editing one of
+    ;; two copies. Runs after claude-code applies its own customizations.
+    (unless my/claude-account-base-program
+      (setq my/claude-account-base-program claude-code-program))
+    (dolist (key '("a" "A"))
+      (when (lookup-key claude-code-command-map (kbd key))
+        (warn "Claude account selection is shadowing an existing %s binding" key)))
+    (if (not (fboundp 'claude-code--start))
+        (warn "claude-code--start is missing; Claude account selection is inactive")
+      (advice-add 'claude-code--start :around #'my/claude-account--around-start)
+      (add-hook 'claude-code-start-hook #'my/claude-account--record)
+      (define-key claude-code-command-map (kbd "a") #'my/claude-code-with-account)
+      (define-key claude-code-command-map (kbd "A") #'my/claude-account-show)))
+#+end_src
+
 * Claude Code IDE
 ** Overview
 Claude Code IDE is an Emacs package that provides IDE-like features for Claude Code, enhancing the coding experience with project awareness, intelligent code suggestions, and streamlined workflows. It acts as a companion to the main claude-code.el package.

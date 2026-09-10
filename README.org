@@ -44,6 +44,8 @@ A modern, literate Emacs configuration using =org-mode= and =straight.el= for pa
    ln -s ~/.dotfiles/.emacs.d/Emacs.org ~/.emacs.d/
    ln -s ~/.dotfiles/.emacs.d/init.el ~/.emacs.d/
    ln -s ~/.dotfiles/org ~/org
+   mkdir -p ~/.local/bin
+   ln -s ~/.dotfiles/bin/claude-acct ~/.local/bin/
    #+end_src
 
 4. Start Emacs - =straight.el= will automatically install all packages. The configuration will automatically tangle =Emacs.org= to =init.el= whenever you save changes to =Emacs.org=.
@@ -77,10 +79,66 @@ The configuration includes MacOS-specific overrides that:
 ├── .emacs.d/
 │   ├── Emacs.org    # Main configuration file (auto-tangles to init.el)
 │   └── init.el      # Generated configuration
+├── bin/
+│   └── claude-acct  # Run Claude Code under a chosen account (see Scripts)
 └── org/
     ├── templates/   # Org capture templates
     └── *.org        # Org files for tasks, notes, etc.
 #+end_src
+
+* Scripts
+
+** claude-acct
+
+Runs Claude Code under a named account:
+
+#+begin_src bash
+claude-acct <account> [claude args...]
+#+end_src
+
+Claude Code takes its identity from ambient state — a Keychain login, or an
+OAuth token in the environment — which is awkward to control from an editor,
+since editors exec the binary directly and never source a shell. This script
+makes the account an explicit argument.
+
+Accounts are configured by environment, so the script holds no site-specific
+values. For an account (upper-cased, ~-~ as ~_~) the token comes from the first
+of these that is set, and a session with neither runs under whatever
+~claude /login~ last established:
+
+| Variable                          | Meaning                                                |
+|-----------------------------------+--------------------------------------------------------|
+| ~CLAUDE_ACCT_TOKEN_<ACCOUNT>~     | The OAuth token itself. Checked first.                 |
+| ~CLAUDE_ACCT_TOKEN_REF_<ACCOUNT>~ | A 1Password reference to read it from                  |
+| ~CLAUDE_ACCT_AMBIENT_<ACCOUNT>~   | Declare that this account uses the ambient login       |
+| ~CLAUDE_ACCT_CLAUDE_BIN~          | Path to the real =claude= binary                       |
+
+#+begin_src bash
+export CLAUDE_ACCT_TOKEN_WORK="sk-ant-oat..."           # no secret manager
+export CLAUDE_ACCT_TOKEN_REF_WORK="op://Vault/id/cred"  # or via 1Password
+claude-acct work   # token-authenticated
+claude-acct me     # ambient login
+#+end_src
+
+~op~ is optional — it is consulted only for accounts configured with a ~_REF~
+and no direct token, so setups without 1Password work unchanged. The trade-off
+is that a direct token stays in the environment and is inherited by child
+processes, whereas the ~_REF~ form keeps it out of the environment and makes
+each session start a prompted, explicit authorization.
+
+~ANTHROPIC_API_KEY~ and ~ANTHROPIC_AUTH_TOKEN~ are cleared for *every* account.
+Either outranks both an OAuth token and the Keychain login in Claude Code's
+auth precedence, so a stray key silently changes how the session is billed —
+and Emacs inherits the login shell's environment wholesale, so a key set once
+reaches every session it spawns.
+
+An account with no token runs under the ambient login and says so on stderr,
+since that is also what a typo'd account name looks like; declaring
+~CLAUDE_ACCT_AMBIENT_<ACCOUNT>~ states the intent and silences the notice.
+
+Emacs picks the account per directory and invokes this script; see the Account
+Selection section of =Emacs.org=. The script must be on ~PATH~ — the install
+step above links it into =~/.local/bin=.
 
 * Dependencies
 
@@ -92,6 +150,9 @@ The configuration includes MacOS-specific overrides that:
 
 ** Optional Dependencies
 
+- [[https://developer.1password.com/docs/cli/][1Password CLI]] (~op~) — only for ~bin/claude-acct~ accounts configured with
+  ~CLAUDE_ACCT_TOKEN_REF_*~; accounts using a direct token or the ambient login
+  do not need it
 - pyenv or similar for Python virtual environment management
 - [[https://www.nerdfonts.com/][nerd-fonts]] for icons
 
