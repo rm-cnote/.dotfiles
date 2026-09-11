@@ -1599,6 +1599,84 @@ already has them."
       (define-key claude-code-command-map (kbd "a") #'my/claude-code-with-account)
       (define-key claude-code-command-map (kbd "A") #'my/claude-account-show)))
 
+;; Rename a Claude session and its Emacs buffer together. claude-code.el names
+  ;; instances only at creation, and that name never reaches Claude; `/rename' is
+  ;; Claude's own and is what `--resume' lists. This keeps both in step.
+  (declare-function claude-code--buffer-p "claude-code")
+  (declare-function claude-code--get-or-prompt-for-buffer "claude-code")
+  (declare-function claude-code--term-send-string "claude-code")
+  (declare-function claude-code--extract-instance-name-from-buffer-name "claude-code")
+  (defvar claude-code-terminal-backend)
+  (defvar claude-code-command-map)
+
+  (defconst my/claude-code--buffer-name-regexp
+    "\\`\\*claude:\\([^:]+\\)\\(?::\\([^*]+\\)\\)?\\*\\'"
+    "Match a Claude buffer name, capturing directory and instance.
+Mirrors the pattern `claude-code--extract-instance-name-from-buffer-name'
+uses: the directory part holds no colon and the instance no asterisk.")
+
+  (defun my/claude-code--rename-to (buffer-name instance)
+    "Return BUFFER-NAME with its instance portion replaced by INSTANCE.
+Substituting into the existing name rather than rebuilding it from the
+directory keeps whatever naming convention is in force."
+    (if (string-match my/claude-code--buffer-name-regexp buffer-name)
+        (format "*claude:%s:%s*" (match-string 1 buffer-name) instance)
+      (error "Not a Claude buffer name: %s" buffer-name)))
+
+  (defun my/claude-code--check-instance-name (name)
+    "Signal unless NAME is usable as both a buffer name and a slash argument."
+    (cond
+     ((string-empty-p (string-trim name))
+      (user-error "Session name cannot be empty"))
+     ((string-match-p "[*:]" name)
+      (user-error "Session name cannot contain `*' or `:'"))
+     ((string-match-p "[[:cntrl:]]" name)
+      (user-error "Session name cannot contain control characters"))))
+
+  (defun my/claude-code-rename (name &optional buffer)
+    "Rename the Claude session in BUFFER, and BUFFER itself, to NAME.
+
+Sends `/rename NAME' so Claude's own session name matches, which is what
+the CLI's `--resume' picker lists, then renames the Emacs buffer so the
+two agree.  Interactively, acts on the current Claude buffer when there
+is one and otherwise prompts, defaulting to the current instance name."
+    (interactive
+     (let* ((buf (if (claude-code--buffer-p (current-buffer))
+                     (current-buffer)
+                   (claude-code--get-or-prompt-for-buffer)))
+            (current (and buf (claude-code--extract-instance-name-from-buffer-name
+                               (buffer-name buf)))))
+       (unless buf (user-error "No Claude session to rename"))
+       (list (read-string (format "Rename Claude session%s to: "
+                                  (if current (format " (%s)" current) ""))
+                          nil nil current)
+             buf)))
+    (let* ((buffer (or buffer (current-buffer)))
+           (name (string-trim name))
+           new-name)
+      ;; Validate before deriving, so a bad name reports itself rather than
+      ;; surfacing as a complaint about the buffer.
+      (my/claude-code--check-instance-name name)
+      (setq new-name (my/claude-code--rename-to (buffer-name buffer) name))
+      (when-let* ((clash (get-buffer new-name)))
+        (unless (eq clash buffer)
+          (user-error "A Claude buffer named %s already exists" new-name)))
+      (with-current-buffer buffer
+        ;; Same shape as `claude-code--do-send-command', sent to this buffer
+        ;; rather than re-prompting for one.
+        (claude-code--term-send-string claude-code-terminal-backend
+                                       (concat "/rename " name))
+        (sit-for 0.1)
+        (claude-code--term-send-string claude-code-terminal-backend (kbd "RET"))
+        (rename-buffer new-name))
+      (message "Renamed to %s (sent /rename %s)" new-name name)
+      new-name))
+
+  (with-eval-after-load 'claude-code
+    (if (fboundp 'claude-code--term-send-string)
+        (define-key claude-code-command-map (kbd "N") #'my/claude-code-rename)
+      (warn "claude-code--term-send-string is missing; session rename unavailable")))
+
 ;; Claude Code IDE - Enhanced IDE features for Claude Code
 (use-package claude-code-ide
   :straight (:type git :host github :repo "manzaltu/claude-code-ide.el")
